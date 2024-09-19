@@ -1,0 +1,24 @@
+{
+  "name": "site-kit",
+  "version": "0.0.1",
+  "description": "Tool for parsing, processing, and generating static HTML files",
+  "main": "parse.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nefarious-kitsune/site-kit"
+  },
+  "keywords": [
+    "html",
+    "ssg"
+  ],
+  "author": "Kitsune21",
+  "license": "MIT",
+  "devDependencies": {
+    "eslint": "^9.10.0",
+    "eslint-config-google": "^0.14.0"
+  }
+}
