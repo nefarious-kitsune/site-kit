@@ -1,9 +1,9 @@
 /**
- * @typedef {Object} Location - Row and column numbers of a cursor location
- * @property {number} row - Row (line) number
- * @property {number} col - Column number
+ * @typedef {Object} Location - Information of a cursor location
+ * @property {number} pos - Position of the cursor in the source
+ * @property {number} row - Row (line) number of the position
+ * @property {number} col - Column number of the position
  */
-
 
 export class htmlParser {
   /**
@@ -15,12 +15,39 @@ export class htmlParser {
       .replaceAll('\r\n', '\n')
       .replaceAll('\r', '\n');
 
-    // Convert the source to Unicode character array
-    this.sourceChars = [...srcContent];
+    // JavaScript does not support Unicode natively
+    // Convert to Unicode character array
+    /** @type {string[]} */
+    const sourceChars =  [...srcContent];
 
-    this.currPos = 0;
-    this.currLocation = {row: 0, col: 0};
-    this.currChar = this.sourceChars[this.currPos];
+    /**
+     * @type {string[]}
+     * Source code in Unicode character array
+     */
+    this.__sourceChars = sourceChars;
+
+    /**
+     * @type {number}
+     * Max length of the source content
+     */
+    this.__length = sourceChars.length;
+
+    /**
+     * @type {Location}
+     * Information about current cursor position
+     */
+    this.__location = {
+      pos: 0,
+      row: 1,
+      col: 1,
+    };
+
+    /**
+     * @type {Location}
+     * Character in current cursor position
+     */
+    this.__char = this.getCurrChar();
+
     this.elements = [];
   }
 
@@ -29,7 +56,7 @@ export class htmlParser {
    * @return {number}
    **/
   getCurrPos() {
-    return this.currPos;
+    return this.__location.pos;
   }
 
   /**
@@ -37,7 +64,10 @@ export class htmlParser {
    * @return {string}
    **/
   getCurrChar() {
-    return this.currChar;
+    let {pos} = this.__location;
+    if (pos >= this.__length) return null; // EOI
+    this.__char = this.__sourceChars[pos];
+    return this.__char;
   }
 
   /**
@@ -45,10 +75,7 @@ export class htmlParser {
    * @return {Location}
   **/
   getCurrLocation() {
-    return ({
-      row: this.currLocation.row,
-      col: this.currLocation.col,
-    });
+    return Object.assign({}, this.__location);;
   }
 
   /**
@@ -56,28 +83,39 @@ export class htmlParser {
    * @return {string}
    **/
   getNextChar() {
-    if (this.currPos >= this.sourceChars.length) {
-      return null; // EOF
+    let {pos, row, col} = this.__location;
+    let char = this.__char;
+
+    if (char === null) return null; // Already EOI
+
+    if (pos + 1 >= this.__length) { // End of input.
+      this.__location.pos = this.__length;
+      this.__char = null;
+      return null; // EOI
     }
 
-    if (this.currChar === '\n') {
-      this.currLocation.col = 0;
-      this.currLocation.row++;
+    if (char === '\n') { // Are we starting a new line?
+      row++; 
+      col = 1;
     } else {
-      this.currLocation.col++;
+      col++;
     }
-    this.currChar = this.sourceChars[++this.currPos];
-    return this.currChar;
+
+    pos++;
+    char = this.__sourceChars[pos];
+
+    this.__location = {pos: pos, row: row, col: col};
+    this.__char = char;
+    return char;
   }
 
   /**
    * Backtracking to a saved position
-   * @param {number} pos - cursor position
-   * @param {Location} loc - location
+   * @param {Location} loc - Saved location
    **/
-  backtrack(pos, loc) {
-    this.currPos = pos;
-    this.currLocation = {row: loc.row, col: loc.col};
+  backtrack(loc) {
+    this.__location = {pos: loc.pos, row: loc.row, col: loc.col};
+    this.getCurrChar();
   }
 
   /**
@@ -87,7 +125,30 @@ export class htmlParser {
    * @return {string}
    **/
   extract(start, end) {
-    return this.sourceChars.slice(start, end).join('');
+    return this.__sourceChars.slice(start, end).join('');
+  }
+
+  /**
+   * Parse white space
+   * @return {string|null}
+   **/
+  parseWhiteSpace() {
+    const startLoc = this.getCurrLocation();
+    let char = this.getCurrChar();
+    let text = '';
+
+    while ((char) && (' \n\t'.indexOf(char) !== -1)) {
+      text = text + char;
+      char = this.getNextChar();
+    }
+
+    const endPos = this.getCurrPos();
+    if (endPos > startPos) {
+      return this.extract(startPos.pos, endPos.pos);
+    } else {
+      this.backtrack(startPos, startLoc);
+      return null;
+    }
   }
 
   /**
@@ -95,7 +156,6 @@ export class htmlParser {
    * @return {string|null}
    **/
   parseHtmlTagName() {
-    const startPos = this.getCurrPos();
     const startLoc = this.getCurrLocation();
     let char = this.getCurrChar();
 
@@ -103,39 +163,40 @@ export class htmlParser {
       char = this.getNextChar();
     }
 
-    const endPos = this.getCurrPos();
-    if (endPos > startPos) {
-      return this.extract(startPos, endPos).toLowerCase();
+    const endLoc = this.getCurrLocation();
+
+    if (endLoc.pos > startLoc.pos) {
+      return this.extract(startLoc.pos, endLoc.pos).toLowerCase();
     } else {
-      this.backtrack(startPos, startLoc);
+      this.backtrack(startLoc);
       return null;
     }
   }
 
   /**
    * Parse HTML element
-   * @return {string|null}
+   * @return {object}
    **/
   parseHtmlElement() {
-    const startPos = this.getCurrPos();
     const startLoc = this.getCurrLocation();
     let char = this.getCurrChar();
     if (char === '<') {
-      this.getNextChar();
+      char = this.getNextChar();
     } else {
-      this.backtrack(startPos, startLoc);
+      this.backtrack(startLoc);
       return null;
     }
 
     const tagName = this.parseHtmlTagName();
     if (tagName === null) {
-      this.backtrack(startPos, startLoc);
+      this.backtrack(startLoc);
       return null;
     }
 
+    const endLoc = this.getCurrLocation();
     return ({
-      pos: startPos,
-      location: startLoc,
+      start: startLoc,
+      end: endLoc,
       tagName: tagName,
     })
   }
