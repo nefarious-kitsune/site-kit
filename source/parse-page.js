@@ -46,9 +46,19 @@ export class htmlParser {
      * @type {Location}
      * Character in current cursor position
      */
-    this.__char = this.getCurrChar();
+    this.__char = this.readChar();
 
     this.elements = [];
+  }
+
+  /**
+   * Read the character at current cursor position
+   * @return {string}
+   **/
+  readChar() {
+    let {pos} = this.__location;
+    if (pos >= this.__length) return null; // EOI
+    return this.__sourceChars[pos];
   }
 
   /**
@@ -60,17 +70,6 @@ export class htmlParser {
   }
 
   /**
-   * Get the character at current cursor position
-   * @return {string}
-   **/
-  getCurrChar() {
-    let {pos} = this.__location;
-    if (pos >= this.__length) return null; // EOI
-    this.__char = this.__sourceChars[pos];
-    return this.__char;
-  }
-
-  /**
    * Get the location of current cursor
    * @return {Location}
   **/
@@ -79,21 +78,59 @@ export class htmlParser {
   }
 
   /**
+   * Get the character at current cursor position
+   * @return {string}
+   **/
+  getCurrChar() {
+    return this.__char;
+  }
+
+  /**
+   * Get the character code at current cursor position
+   * @return {number}
+   **/
+  getCurrCharCode() {
+    return (this.__char)?this.__char.charCodeAt(0):0;
+  }
+
+  /**
    * Advance the cursor and get the next character
    * @return {string}
    **/
   getNextChar() {
-    let {pos, row, col} = this.__location;
-    let char = this.__char;
+    this.advance();
+    return this.getCurrChar();
+  }
 
-    if (char === null) return null; // Already EOI
+  /**
+   * Advance the cursor and get char code of the next character
+   * @return {string}
+   **/
+  getNextCharCode() {
+    this.advance();
+    return this.getCurrCharCode();
+  }
+
+  /**
+   * Move back to a saved position and update cached char
+   * @param {Location} loc - Saved location
+   **/
+  backtrack(loc) {
+    this.__location = {pos: loc.pos, row: loc.row, col: loc.col};
+    this.__char = this.readChar();
+  }
+
+  /** Advance cursor and update cached char */
+  advance() {
+    let {pos, row, col} = this.__location;
 
     if (pos + 1 >= this.__length) { // End of input.
       this.__location.pos = this.__length;
       this.__char = null;
-      return null; // EOI
+      return;
     }
 
+    let char = this.__char;
     if (char === '\n') { // Are we starting a new line?
       row++; 
       col = 1;
@@ -102,20 +139,9 @@ export class htmlParser {
     }
 
     pos++;
-    char = this.__sourceChars[pos];
 
     this.__location = {pos: pos, row: row, col: col};
-    this.__char = char;
-    return char;
-  }
-
-  /**
-   * Backtracking to a saved position
-   * @param {Location} loc - Saved location
-   **/
-  backtrack(loc) {
-    this.__location = {pos: loc.pos, row: loc.row, col: loc.col};
-    this.getCurrChar();
+    this.__char = this.readChar();
   }
 
   /**
@@ -142,11 +168,60 @@ export class htmlParser {
       char = this.getNextChar();
     }
 
-    const endPos = this.getCurrPos();
-    if (endPos > startPos) {
-      return this.extract(startPos.pos, endPos.pos);
+    const endLoc = this.getCurrLocation();
+    if (endLoc.pos > startLoc.pos) {
+      return this.extract(startLoc.pos, endLoc.pos);
     } else {
-      this.backtrack(startPos, startLoc);
+      this.backtrack(startLoc);
+      return null;
+    }
+  }
+
+  /**
+   * Parse value assigned to an HTML attribute
+   * @return {string|null}
+   **/
+  parseAttributeValue() {
+    const startLoc = this.getCurrLocation();
+    let char = this.getCurrChar();
+    // Assuming valid XML syntax (value must be quoted)
+    if (char !== '"') return null;
+
+
+    char = this.getNextChar();
+    const valueStartPos = this.getCurrLocation().pos;
+
+    while ((char) && (char !== '\n') && (char !== '"')) {
+      char = this.getNextChar();
+    }
+
+    if (char !== '"') {
+      this.backtrack(startLoc);
+      return null;
+    }
+
+    const valueEndPos = this.getCurrLocation().pos;
+    return this.extract(valueStartPos+1, valueEndPos-1);
+  }
+
+  /**
+   * Parse attribute name inside an HTML tag
+   * @return {string|null}
+   **/
+  parseAttributeName() {
+    const startLoc = this.getCurrLocation();
+    let char = this.getCurrChar();
+
+    while ((char) && (' \n\t\'"=/>'.indexOf(char) === -1)) {
+      char = this.getNextChar();
+    }
+
+    const endLoc = this.getCurrLocation();
+
+    if (endLoc.pos > startLoc.pos) {
+      return this.extract(startLoc.pos, endLoc.pos).toLowerCase();
+    } else {
+      this.backtrack(startLoc);
       return null;
     }
   }
@@ -157,10 +232,10 @@ export class htmlParser {
    **/
   parseHtmlTagName() {
     const startLoc = this.getCurrLocation();
-    let char = this.getCurrChar();
+    let code = this.getCurrCharCode();
 
-    while ((char) && (' \n\r\'"=/>'.indexOf(char) === -1)) {
-      char = this.getNextChar();
+    while (((code >= 65) && (code <= 90))||((code >= 97) && (code <= 122))) {
+      code = this.getNextCharCode();
     }
 
     const endLoc = this.getCurrLocation();
@@ -181,7 +256,7 @@ export class htmlParser {
     const startLoc = this.getCurrLocation();
     let char = this.getCurrChar();
     if (char === '<') {
-      char = this.getNextChar();
+      this.advance();
     } else {
       this.backtrack(startLoc);
       return null;
@@ -193,11 +268,39 @@ export class htmlParser {
       return null;
     }
 
+    const attributes = [];
+
+    do {
+      let attributeName;
+      let attributeValue = null;
+
+      this.parseWhiteSpace();
+      attributeName = this.parseAttributeName();
+
+      if (!attributeName) break;
+
+      this.parseWhiteSpace();
+      char = this.getCurrChar();
+      if (char === '=') {
+        this.parseWhiteSpace();
+        attributeValue = this.parseAttributeValue();
+        if (!attributeValue) {
+          throw new Error(`Failed to tokenize [text fragment]`)
+        }
+      }
+
+      attributes.push({
+        name: attributeName,
+        value: attributeValue,
+      });
+    } while (true)    
+
     const endLoc = this.getCurrLocation();
     return ({
       start: startLoc,
       end: endLoc,
       tagName: tagName,
+      attributes: attributes,
     })
   }
 
@@ -205,8 +308,8 @@ export class htmlParser {
    * Parse the page
    **/
   parse() {
-    return this.parseHtmlElement().tagName;
+    return this.parseHtmlElement();
   }
 };
 
-// console.log((new htmlParser('<this> <is> <a> <test>')).parse());
+console.log((new htmlParser('<this is a test> <is> <a> <test>')).parse());
